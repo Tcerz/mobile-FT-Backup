@@ -6,7 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config/supabase_config.dart';
 import 'pages/akun_nonaktif_page.dart';
 import 'pages/login_page.dart';
-import 'pages/main_shell_page.dart';
+import 'pages/home_page.dart';
 import 'providers/laporan_provider.dart';
 import 'providers/profil_provider.dart';
 import 'services/auth_service.dart';
@@ -112,7 +112,7 @@ class _ProfilGateState extends State<_ProfilGate> {
     if (!profil.aktif) {
       return const AkunNonaktifPage();
     }
-    return const MainShellPage();
+    return const HomePage();
   }
 }
 

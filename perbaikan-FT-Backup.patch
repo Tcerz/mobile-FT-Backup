@@ -1,0 +1,568 @@
+diff --git a/lib/main.dart b/lib/main.dart
+index 0b2775b..1a7fc62 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -6,7 +6,7 @@ import 'package:supabase_flutter/supabase_flutter.dart';
+ import 'config/supabase_config.dart';
+ import 'pages/akun_nonaktif_page.dart';
+ import 'pages/login_page.dart';
+-import 'pages/main_shell_page.dart';
++import 'pages/home_page.dart';
+ import 'providers/laporan_provider.dart';
+ import 'providers/profil_provider.dart';
+ import 'services/auth_service.dart';
+@@ -112,7 +112,7 @@ class _ProfilGateState extends State<_ProfilGate> {
+     if (!profil.aktif) {
+       return const AkunNonaktifPage();
+     }
+-    return const MainShellPage();
++    return const HomePage();
+   }
+ }
+ 
+diff --git a/lib/pages/input_laporan_page.dart b/lib/pages/input_laporan_page.dart
+index 6205cc1..7f454f9 100644
+--- a/lib/pages/input_laporan_page.dart
++++ b/lib/pages/input_laporan_page.dart
+@@ -25,25 +25,13 @@ class InputLaporanPage extends StatefulWidget {
+ 
+   /// Kalau diisi (dan [laporanId] null) -> mode DUPLIKAT: membuat laporan
+   /// BARU dengan PIC & seluruh data 4 kegiatan disalin dari laporan ini,
+-  /// tapi Jam Patroli & foto dikosongkan (wajib diisi ulang).
+-  /// Sumbernya laporan MILIK SENDIRI di device ini (dicari lewat id lokal).
++  /// tapi Jam Patroli & foto dikosongkan (wajib diisi/diambil ulang).
+   final int? duplikatDariId;
+ 
+-  /// Alternatif dari [duplikatDariId]: dipakai saat duplikat berasal dari
+-  /// laporan MILIK ORANG LAIN (tab Posted) -- datanya sudah diambil
+-  /// langsung dari server, tanpa foto (foto wajib diambil ulang sendiri).
+-  final Laporan? duplikatData;
+-
+-  const InputLaporanPage({
+-    super.key,
+-    this.laporanId,
+-    this.duplikatDariId,
+-    this.duplikatData,
+-  });
++  const InputLaporanPage({super.key, this.laporanId, this.duplikatDariId});
+ 
+   bool get modeEdit => laporanId != null;
+-  bool get modeDuplikat =>
+-      laporanId == null && (duplikatDariId != null || duplikatData != null);
++  bool get modeDuplikat => laporanId == null && duplikatDariId != null;
+ 
+   @override
+   State<InputLaporanPage> createState() => _InputLaporanPageState();
+@@ -143,11 +131,9 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
+ 
+   Future<void> _muatLaporanUntukDuplikat() async {
+     setState(() => _loadingAwal = true);
+-    final sumber =
+-        widget.duplikatData ??
+-        await context.read<LaporanProvider>().fetchDetail(
+-          widget.duplikatDariId!,
+-        );
++    final sumber = await context.read<LaporanProvider>().fetchDetail(
++      widget.duplikatDariId!,
++    );
+     if (sumber == null) {
+       if (mounted) setState(() => _loadingAwal = false);
+       return;
+@@ -162,9 +148,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
+       _discharge = sumber.discharge;
+       _penyaluran = sumber.penyaluran;
+       _storage = sumber.storage;
+-      for (final foto in sumber.fotos) {
+-        _fotoMap[foto.kategori] = foto;
+-      }
++      // Foto SENGAJA tidak disalin: petugas wajib mengambil ulang keempat
++      // foto (lokasi, jam, suhu harus sesuai patroli yang baru).
+       _loadingAwal = false;
+     });
+   }
+@@ -335,31 +320,38 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
+       storage: _storage,
+     );
+ 
+-    final List<FotoLaporan> fotos = [];
+-    for (final k in KategoriFoto.semua) {
+-      final f = _fotoMap[k];
+-      if (f == null) continue;
+-      if (widget.modeDuplikat) {
+-        final suhuBaru = await WeatherService.getSuhuSaatIni(
+-          f.latitude,
+-          f.longitude,
+-        );
+-        fotos.add(f.copyWith(jam: waktuDibuat, suhu: suhuBaru));
+-      } else {
+-        fotos.add(f);
+-      }
+-    }
++    final fotos = [
++      for (final k in KategoriFoto.semua)
++        if (_fotoMap[k] != null) _fotoMap[k]!,
++    ];
+ 
++    // Simpan lokal dulu (selalu berhasil), baru upload otomatis. Kalau
++    // upload gagal (mis. tidak ada sinyal), laporan tetap aman di HP dan
++    // di-upload ulang otomatis saat login berikutnya / lewat tombol di card.
+     final provider = context.read<LaporanProvider>();
++    final int id;
+     if (widget.modeEdit) {
+       await provider.updateLaporan(laporan, fotos);
++      id = widget.laporanId!;
+     } else {
+-      await provider.simpanLaporan(laporan, fotos);
++      id = await provider.simpanLaporan(laporan, fotos);
+     }
++    final errorUpload = await provider.uploadLaporanById(id);
+ 
+     if (!mounted) return;
++    // Ambil messenger sebelum pop supaya snackbar tetap muncul di Home.
++    final messenger = ScaffoldMessenger.of(context);
+     setState(() => _menyimpan = false);
+     Navigator.pop(context, true);
++    messenger.showSnackBar(
++      SnackBar(
++        content: Text(
++          errorUpload == null
++              ? 'Laporan tersimpan & terupload'
++              : 'Laporan tersimpan di HP, tapi upload gagal. Tekan "Coba Lagi" di laporan tersebut.',
++        ),
++      ),
++    );
+   }
+ 
+   String get _judul {
+@@ -461,8 +453,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
+                 Expanded(
+                   child: Text(
+                     'PIC & data kegiatan disalin dari laporan sebelumnya. '
+-                    'Periksa kembali foto dan pilih Jam Patroli yang baru '
+-                    'sebelum menyimpan.',
++                    'Pilih Jam Patroli yang baru dan ambil ulang keempat '
++                    'foto sebelum menyimpan.',
+                     style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
+                   ),
+                 ),
+@@ -632,10 +624,10 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
+                   : Text(
+                       akhir
+                           ? (widget.modeEdit
+-                                ? 'Simpan Perubahan'
++                                ? 'Simpan & Upload Perubahan'
+                                 : widget.modeDuplikat
+-                                ? 'Simpan Laporan Baru'
+-                                : 'Simpan Laporan')
++                                ? 'Simpan & Upload Laporan Baru'
++                                : 'Simpan & Upload Laporan')
+                           : 'Selanjutnya',
+                     ),
+             ),
+diff --git a/lib/pages/main_shell_page.dart b/lib/pages/main_shell_page.dart
+deleted file mode 100644
+index c59a85c..0000000
+--- a/lib/pages/main_shell_page.dart
++++ /dev/null
+@@ -1,40 +0,0 @@
+-import 'package:flutter/material.dart';
+-
+-import 'home_page.dart';
+-import 'posted_page.dart';
+-
+-/// Wadah dengan 2 tab: "Aktivitas" (laporan milik sendiri, lokal+upload)
+-/// dan "Posted" (laporan se-depot dari semua petugas, read-only+duplikat).
+-class MainShellPage extends StatefulWidget {
+-  const MainShellPage({super.key});
+-
+-  @override
+-  State<MainShellPage> createState() => _MainShellPageState();
+-}
+-
+-class _MainShellPageState extends State<MainShellPage> {
+-  int _index = 0;
+-
+-  void _keAktivitas() => setState(() => _index = 0);
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return Scaffold(
+-      body: IndexedStack(
+-        index: _index,
+-        children: [
+-          const HomePage(),
+-          PostedPage(onPindahKeAktivitas: _keAktivitas),
+-        ],
+-      ),
+-      bottomNavigationBar: NavigationBar(
+-        selectedIndex: _index,
+-        onDestinationSelected: (i) => setState(() => _index = i),
+-        destinations: const [
+-          NavigationDestination(icon: Icon(Icons.assignment_outlined), selectedIcon: Icon(Icons.assignment), label: 'Aktivitas'),
+-          NavigationDestination(icon: Icon(Icons.groups_outlined), selectedIcon: Icon(Icons.groups), label: 'Posted'),
+-        ],
+-      ),
+-    );
+-  }
+-}
+diff --git a/lib/pages/posted_detail_page.dart b/lib/pages/posted_detail_page.dart
+deleted file mode 100644
+index bc7a4d9..0000000
+--- a/lib/pages/posted_detail_page.dart
++++ /dev/null
+@@ -1,125 +0,0 @@
+-import 'package:flutter/material.dart';
+-
+-import '../models/foto_laporan_model.dart';
+-import '../models/laporan_model.dart';
+-
+-/// Detail READ-ONLY untuk laporan milik petugas lain (dari tab Posted).
+-/// Tidak ada tombol Edit -- cuma bisa Lihat & Duplikat. Logic duplikat
+-/// (unduh foto, buka InputLaporanPage, pindah tab) didelegasikan ke
+-/// [onDuplikat] supaya tidak dobel dengan yang ada di posted_page.dart.
+-class PostedDetailPage extends StatefulWidget {
+-  final Laporan laporan;
+-  final Future<bool> Function() onDuplikat;
+-  const PostedDetailPage({super.key, required this.laporan, required this.onDuplikat});
+-
+-  @override
+-  State<PostedDetailPage> createState() => _PostedDetailPageState();
+-}
+-
+-class _PostedDetailPageState extends State<PostedDetailPage> {
+-  bool _memproses = false;
+-
+-  Future<void> _tapDuplikat() async {
+-    setState(() => _memproses = true);
+-    final berhasil = await widget.onDuplikat();
+-    if (!mounted) return;
+-    setState(() => _memproses = false);
+-    // popUntil ke root (MainShellPage) -- membersihkan halaman detail ini
+-    // DAN halaman input laporan dari stack navigasi sekaligus, supaya user
+-    // langsung mendarat di tab Aktivitas, bukan nyangkut di sini.
+-    if (berhasil) Navigator.popUntil(context, (r) => r.isFirst);
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    final laporan = widget.laporan;
+-    return Scaffold(
+-      appBar: AppBar(
+-        title: Text('Patroli ${laporan.tanggal}'),
+-        actions: [
+-          IconButton(
+-            tooltip: 'Duplikat jadi Laporan Baru Saya',
+-            icon: _memproses
+-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+-                : const Icon(Icons.content_copy),
+-            onPressed: _memproses ? null : _tapDuplikat,
+-          ),
+-        ],
+-      ),
+-      body: ListView(
+-        padding: const EdgeInsets.all(16),
+-        children: [
+-          Container(
+-            margin: const EdgeInsets.only(bottom: 12),
+-            padding: const EdgeInsets.all(10),
+-            decoration: BoxDecoration(
+-              color: Colors.grey.shade100,
+-              borderRadius: BorderRadius.circular(8),
+-            ),
+-            child: Row(
+-              children: const [
+-                Icon(Icons.visibility, size: 16, color: Colors.grey),
+-                SizedBox(width: 8),
+-                Expanded(child: Text('Laporan milik petugas lain -- hanya bisa dilihat & diduplikat', style: TextStyle(fontSize: 12, color: Colors.black54))),
+-              ],
+-            ),
+-          ),
+-          Card(
+-            child: Padding(
+-              padding: const EdgeInsets.all(12),
+-              child: Column(
+-                crossAxisAlignment: CrossAxisAlignment.start,
+-                children: [
+-                  Text('Jam Patroli: ${laporan.jamPatroli} WIB'),
+-                  Text('PIC Patroli: ${laporan.picPatroli}'),
+-                  Text('Dibuat oleh: ${laporan.namaPembuat}'),
+-                  Text('Waktu Dibuat: ${laporan.waktuDibuat}'),
+-                ],
+-              ),
+-            ),
+-          ),
+-          const SizedBox(height: 16),
+-          const Text('Foto Patroli', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+-          const SizedBox(height: 8),
+-          ...laporan.fotos.map(_kartuFoto),
+-        ],
+-      ),
+-    );
+-  }
+-
+-  Widget _kartuFoto(FotoLaporan foto) {
+-    return Card(
+-      margin: const EdgeInsets.only(bottom: 12),
+-      child: Padding(
+-        padding: const EdgeInsets.all(10),
+-        child: Row(
+-          crossAxisAlignment: CrossAxisAlignment.start,
+-          children: [
+-            ClipRRect(
+-              borderRadius: BorderRadius.circular(8),
+-              child: Image.network(
+-                foto.imagePath, // URL foto di server, khusus untuk halaman read-only ini
+-                width: 80,
+-                height: 80,
+-                fit: BoxFit.cover,
+-                errorBuilder: (_, __, ___) => Container(width: 80, height: 80, color: Colors.grey.shade200, child: const Icon(Icons.broken_image)),
+-              ),
+-            ),
+-            const SizedBox(width: 12),
+-            Expanded(
+-              child: Column(
+-                crossAxisAlignment: CrossAxisAlignment.start,
+-                children: [
+-                  Text(foto.kategori, style: const TextStyle(fontWeight: FontWeight.bold)),
+-                  Text('Suhu: ${foto.suhu}', style: const TextStyle(fontSize: 12)),
+-                  Text('Jam: ${foto.jam}', style: const TextStyle(fontSize: 12)),
+-                  Text('Lokasi: ${foto.alamat}', style: const TextStyle(fontSize: 12), maxLines: 2, overflow: TextOverflow.ellipsis),
+-                ],
+-              ),
+-            ),
+-          ],
+-        ),
+-      ),
+-    );
+-  }
+-}
+diff --git a/lib/pages/posted_page.dart b/lib/pages/posted_page.dart
+deleted file mode 100644
+index 46195c0..0000000
+--- a/lib/pages/posted_page.dart
++++ /dev/null
+@@ -1,201 +0,0 @@
+-import 'package:flutter/material.dart';
+-import 'package:provider/provider.dart';
+-
+-import '../models/foto_laporan_model.dart';
+-import '../models/kegiatan_model.dart';
+-import '../models/laporan_model.dart';
+-import '../providers/profil_provider.dart';
+-import '../services/auth_service.dart';
+-import '../services/sync_service.dart';
+-import 'input_laporan_page.dart';
+-import 'posted_detail_page.dart';
+-
+-/// Menampilkan laporan yang sudah diupload oleh SEMUA petugas di depot yang
+-/// sama (read-only). Petugas lain hanya boleh melihat & menduplikasi --
+-/// tidak bisa mengedit laporan milik orang lain.
+-class PostedPage extends StatefulWidget {
+-  final VoidCallback onPindahKeAktivitas;
+-  const PostedPage({super.key, required this.onPindahKeAktivitas});
+-
+-  @override
+-  State<PostedPage> createState() => _PostedPageState();
+-}
+-
+-class _PostedPageState extends State<PostedPage> {
+-  List<Map<String, dynamic>> _rows = [];
+-  bool _loading = true;
+-  String? _error;
+-  String? _sedangDiduplikatId; // id laporan yg fotonya lagi didownload
+-
+-  @override
+-  void initState() {
+-    super.initState();
+-    _muat();
+-  }
+-
+-  Future<void> _muat() async {
+-    setState(() {
+-      _loading = true;
+-      _error = null;
+-    });
+-    try {
+-      final depotId = context.read<ProfilProvider>().depotId;
+-      if (depotId == null) {
+-        setState(() {
+-          _rows = [];
+-          _loading = false;
+-        });
+-        return;
+-      }
+-      final data = await AuthService.client
+-          .from('reports')
+-          .select('*, report_photos(*)')
+-          .eq('depot_id', depotId)
+-          .order('created_at', ascending: false);
+-      setState(() {
+-        _rows = List<Map<String, dynamic>>.from(data);
+-        _loading = false;
+-      });
+-    } catch (e) {
+-      setState(() {
+-        _error = 'Gagal memuat: $e';
+-        _loading = false;
+-      });
+-    }
+-  }
+-
+-  /// Laporan untuk ditampilkan (read-only) -- foto masih berupa URL
+-  /// jaringan, cukup dipakai Image.network, tidak perlu diunduh.
+-  Laporan _keLaporanTampilan(Map<String, dynamic> row) {
+-    final fotos = (row['report_photos'] as List)
+-        .map((f) => FotoLaporan(
+-              kategori: f['kategori'] as String,
+-              imagePath: f['photo_url'] as String,
+-              latitude: (f['latitude'] as num).toDouble(),
+-              longitude: (f['longitude'] as num).toDouble(),
+-              alamat: f['alamat'] as String,
+-              jam: f['jam'] as String,
+-              suhu: f['suhu'] as String,
+-            ))
+-        .toList();
+-    return _bangunLaporan(row, fotos);
+-  }
+-
+-  Laporan _bangunLaporan(Map<String, dynamic> row, List<FotoLaporan> fotos) {
+-    return Laporan(
+-      namaPembuat: row['nama_pembuat'] as String,
+-      tanggal: row['tanggal'] as String, // ikut tanggal laporan ASLI, bukan hari ini
+-      jamPatroli: row['jam_patroli'] as String,
+-      picPatroli: row['pic_patroli'] as String,
+-      waktuDibuat: row['waktu_dibuat'] as String,
+-      loading: LoadingDischargeData.fromJson(row['loading_data'] as String? ?? ''),
+-      discharge: LoadingDischargeData.fromJson(row['discharge_data'] as String? ?? ''),
+-      penyaluran: PenyaluranData.fromJson(row['penyaluran_data'] as String? ?? ''),
+-      storage: StorageData.fromJson(row['storage_data'] as String? ?? ''),
+-      fotos: fotos,
+-    );
+-  }
+-
+-  String _tanggalHariIni() {
+-    final n = DateTime.now();
+-    return '${n.day.toString().padLeft(2, '0')}-${n.month.toString().padLeft(2, '0')}-${n.year}';
+-  }
+-
+-  /// Untuk duplikat: foto TETAP dibawa (bukan dikosongkan), tapi harus
+-  /// diunduh dulu jadi file lokal (bukan URL) supaya bisa dipakai/diedit
+-  /// seperti foto biasa. Jam & suhu pada foto akan otomatis diperbarui
+-  /// mengikuti waktu saat DISIMPAN nanti (logika ini sudah ada di
+-  /// input_laporan_page.dart untuk semua mode duplikat, tidak perlu diulang
+-  /// di sini). Tanggal laporan default ke HARI INI (saat penduplikat
+-  /// menyimpan), bukan ikut tanggal laporan asli -- beda dengan duplikat
+-  /// laporan sendiri yang memang biasanya untuk hari yang sama.
+-  Future<Laporan> _siapkanDataDuplikat(Map<String, dynamic> row) async {
+-    final fotos = <FotoLaporan>[];
+-    for (final f in (row['report_photos'] as List)) {
+-      final path = await SyncService.unduhFoto(f['photo_url'] as String, 'dup_${row['id']}_${f['kategori']}');
+-      if (path == null) continue; // gagal unduh 1 foto -> lewati, jangan gagalkan semua
+-      fotos.add(FotoLaporan(
+-        kategori: f['kategori'] as String,
+-        imagePath: path,
+-        latitude: (f['latitude'] as num).toDouble(),
+-        longitude: (f['longitude'] as num).toDouble(),
+-        alamat: f['alamat'] as String,
+-        jam: f['jam'] as String,
+-        suhu: f['suhu'] as String,
+-      ));
+-    }
+-    return _bangunLaporan(row, fotos).copyWith(tanggal: _tanggalHariIni());
+-  }
+-
+-  Future<bool> _duplikat(Map<String, dynamic> row) async {
+-    setState(() => _sedangDiduplikatId = row['id'] as String);
+-    Laporan laporan;
+-    try {
+-      laporan = await _siapkanDataDuplikat(row);
+-    } finally {
+-      if (mounted) setState(() => _sedangDiduplikatId = null);
+-    }
+-    if (!mounted) return false;
+-    final berhasil = await Navigator.push<bool>(
+-      context,
+-      MaterialPageRoute(builder: (_) => InputLaporanPage(duplikatData: laporan)),
+-    );
+-    if (berhasil == true) widget.onPindahKeAktivitas();
+-    return berhasil == true;
+-  }
+-
+-  void _lihatDetail(Map<String, dynamic> row) {
+-    Navigator.push(
+-      context,
+-      MaterialPageRoute(
+-        builder: (_) => PostedDetailPage(
+-          laporan: _keLaporanTampilan(row),
+-          onDuplikat: () => _duplikat(row),
+-        ),
+-      ),
+-    );
+-  }
+-
+-  @override
+-  Widget build(BuildContext context) {
+-    return Scaffold(
+-      appBar: AppBar(
+-        title: const Text('Posted \u2014 Laporan Se-Depot'),
+-        actions: [IconButton(onPressed: _muat, icon: const Icon(Icons.refresh))],
+-      ),
+-      body: _loading
+-          ? const Center(child: CircularProgressIndicator())
+-          : _error != null
+-              ? Center(child: Padding(padding: const EdgeInsets.all(16), child: Text(_error!)))
+-              : _rows.isEmpty
+-                  ? const Center(child: Text('Belum ada laporan yang diupload di depot ini'))
+-                  : RefreshIndicator(
+-                      onRefresh: _muat,
+-                      child: ListView.builder(
+-                        padding: const EdgeInsets.all(12),
+-                        itemCount: _rows.length,
+-                        itemBuilder: (context, i) {
+-                          final row = _rows[i];
+-                          final sedangDiduplikat = _sedangDiduplikatId == row['id'];
+-                          return Card(
+-                            margin: const EdgeInsets.only(bottom: 10),
+-                            child: ListTile(
+-                              onTap: () => _lihatDetail(row),
+-                              title: Text('${row['tanggal']} \u00b7 ${row['jam_patroli']}'),
+-                              subtitle: Text('Oleh: ${row['nama_pembuat']}\nPIC: ${row['pic_patroli']}'),
+-                              isThreeLine: true,
+-                              trailing: OutlinedButton.icon(
+-                                onPressed: sedangDiduplikat ? null : () => _duplikat(row),
+-                                icon: sedangDiduplikat
+-                                    ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
+-                                    : const Icon(Icons.content_copy, size: 16),
+-                                label: Text(sedangDiduplikat ? 'Mengunduh...' : 'Duplikat'),
+-                              ),
+-                            ),
+-                          );
+-                        },
+-                      ),
+-                    ),
+-    );
+-  }
+-}
+diff --git a/supabase/migrasi_auto_upload.sql b/supabase/migrasi_auto_upload.sql
+new file mode 100644
+index 0000000..f19fa6d
+--- /dev/null
++++ b/supabase/migrasi_auto_upload.sql
+@@ -0,0 +1,17 @@
++-- Jalankan di Supabase Dashboard > SQL Editor SEKALI, sebelum memakai versi
++-- aplikasi yang meng-upload otomatis. Upload otomatis juga dipakai saat
++-- laporan DIEDIT, jadi aplikasi perlu hak UPDATE/DELETE yang sebelumnya
++-- tidak ada di schema.sql.
++
++-- Edit laporan: update baris reports milik sendiri
++create policy "user update laporan sendiri" on reports for update
++  using (auth.uid() = user_id) with check (auth.uid() = user_id);
++
++-- Edit laporan: foto lama dihapus lalu diinsert ulang
++create policy "user hapus foto laporan sendiri" on report_photos for delete using (
++  exists (select 1 from reports r where r.id = report_id and r.user_id = auth.uid())
++);
++
++-- Ambil-ulang foto: file di Storage ditimpa (upload dengan upsert)
++create policy "user timpa foto di folder sendiri" on storage.objects for update
++  using (bucket_id = 'laporan-foto' and (storage.foldername(name))[1] = auth.uid()::text);

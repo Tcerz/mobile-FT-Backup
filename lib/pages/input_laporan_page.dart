@@ -25,25 +25,13 @@ class InputLaporanPage extends StatefulWidget {
 
   /// Kalau diisi (dan [laporanId] null) -> mode DUPLIKAT: membuat laporan
   /// BARU dengan PIC & seluruh data 4 kegiatan disalin dari laporan ini,
-  /// tapi Jam Patroli & foto dikosongkan (wajib diisi ulang).
-  /// Sumbernya laporan MILIK SENDIRI di device ini (dicari lewat id lokal).
+  /// tapi Jam Patroli & foto dikosongkan (wajib diisi/diambil ulang).
   final int? duplikatDariId;
 
-  /// Alternatif dari [duplikatDariId]: dipakai saat duplikat berasal dari
-  /// laporan MILIK ORANG LAIN (tab Posted) -- datanya sudah diambil
-  /// langsung dari server, tanpa foto (foto wajib diambil ulang sendiri).
-  final Laporan? duplikatData;
-
-  const InputLaporanPage({
-    super.key,
-    this.laporanId,
-    this.duplikatDariId,
-    this.duplikatData,
-  });
+  const InputLaporanPage({super.key, this.laporanId, this.duplikatDariId});
 
   bool get modeEdit => laporanId != null;
-  bool get modeDuplikat =>
-      laporanId == null && (duplikatDariId != null || duplikatData != null);
+  bool get modeDuplikat => laporanId == null && duplikatDariId != null;
 
   @override
   State<InputLaporanPage> createState() => _InputLaporanPageState();
@@ -143,11 +131,9 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
 
   Future<void> _muatLaporanUntukDuplikat() async {
     setState(() => _loadingAwal = true);
-    final sumber =
-        widget.duplikatData ??
-        await context.read<LaporanProvider>().fetchDetail(
-          widget.duplikatDariId!,
-        );
+    final sumber = await context.read<LaporanProvider>().fetchDetail(
+      widget.duplikatDariId!,
+    );
     if (sumber == null) {
       if (mounted) setState(() => _loadingAwal = false);
       return;
@@ -162,9 +148,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       _discharge = sumber.discharge;
       _penyaluran = sumber.penyaluran;
       _storage = sumber.storage;
-      for (final foto in sumber.fotos) {
-        _fotoMap[foto.kategori] = foto;
-      }
+      // Foto SENGAJA tidak disalin: petugas wajib mengambil ulang keempat
+      // foto (lokasi, jam, suhu harus sesuai patroli yang baru).
       _loadingAwal = false;
     });
   }
@@ -335,31 +320,38 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       storage: _storage,
     );
 
-    final List<FotoLaporan> fotos = [];
-    for (final k in KategoriFoto.semua) {
-      final f = _fotoMap[k];
-      if (f == null) continue;
-      if (widget.modeDuplikat) {
-        final suhuBaru = await WeatherService.getSuhuSaatIni(
-          f.latitude,
-          f.longitude,
-        );
-        fotos.add(f.copyWith(jam: waktuDibuat, suhu: suhuBaru));
-      } else {
-        fotos.add(f);
-      }
-    }
+    final fotos = [
+      for (final k in KategoriFoto.semua)
+        if (_fotoMap[k] != null) _fotoMap[k]!,
+    ];
 
+    // Simpan lokal dulu (selalu berhasil), baru upload otomatis. Kalau
+    // upload gagal (mis. tidak ada sinyal), laporan tetap aman di HP dan
+    // di-upload ulang otomatis saat login berikutnya / lewat tombol di card.
     final provider = context.read<LaporanProvider>();
+    final int id;
     if (widget.modeEdit) {
       await provider.updateLaporan(laporan, fotos);
+      id = widget.laporanId!;
     } else {
-      await provider.simpanLaporan(laporan, fotos);
+      id = await provider.simpanLaporan(laporan, fotos);
     }
+    final errorUpload = await provider.uploadLaporanById(id);
 
     if (!mounted) return;
+    // Ambil messenger sebelum pop supaya snackbar tetap muncul di Home.
+    final messenger = ScaffoldMessenger.of(context);
     setState(() => _menyimpan = false);
     Navigator.pop(context, true);
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          errorUpload == null
+              ? 'Laporan tersimpan & terupload'
+              : 'Laporan tersimpan di HP, tapi upload gagal. Tekan "Coba Lagi" di laporan tersebut.',
+        ),
+      ),
+    );
   }
 
   String get _judul {
@@ -461,8 +453,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
                 Expanded(
                   child: Text(
                     'PIC & data kegiatan disalin dari laporan sebelumnya. '
-                    'Periksa kembali foto dan pilih Jam Patroli yang baru '
-                    'sebelum menyimpan.',
+                    'Pilih Jam Patroli yang baru dan ambil ulang keempat '
+                    'foto sebelum menyimpan.',
                     style: TextStyle(fontSize: 12, color: Colors.blue.shade800),
                   ),
                 ),
@@ -632,10 +624,10 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
                   : Text(
                       akhir
                           ? (widget.modeEdit
-                                ? 'Simpan Perubahan'
+                                ? 'Simpan & Upload Perubahan'
                                 : widget.modeDuplikat
-                                ? 'Simpan Laporan Baru'
-                                : 'Simpan Laporan')
+                                ? 'Simpan & Upload Laporan Baru'
+                                : 'Simpan & Upload Laporan')
                           : 'Selanjutnya',
                     ),
             ),
