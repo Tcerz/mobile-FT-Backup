@@ -1,0 +1,194 @@
+diff --git a/android/app/src/main/AndroidManifest.xml b/android/app/src/main/AndroidManifest.xml
+index c860491..82054b0 100644
+--- a/android/app/src/main/AndroidManifest.xml
++++ b/android/app/src/main/AndroidManifest.xml
+@@ -9,7 +9,11 @@
+ 
+     <!-- Notifikasi + alarm Safety Patrol -->
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
++    <!-- USE_EXACT_ALARM: diberikan OTOMATIS di Android 13+ (tanpa user harus ke pengaturan).
++         SCHEDULE_EXACT_ALARM hanya untuk Android 12 ke bawah. -->
++    <uses-permission android:name="android.permission.USE_EXACT_ALARM"/>
++    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" android:maxSdkVersion="32"/>
++    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
+     <uses-permission android:name="android.permission.VIBRATE"/>
+diff --git a/lib/pages/pengaturan_notifikasi_page.dart b/lib/pages/pengaturan_notifikasi_page.dart
+index 844c5b9..b62fb39 100644
+--- a/lib/pages/pengaturan_notifikasi_page.dart
++++ b/lib/pages/pengaturan_notifikasi_page.dart
+@@ -21,6 +21,7 @@ class _PengaturanNotifikasiPageState extends State<PengaturanNotifikasiPage> wit
+   Set<String> _slot = daftarJamPatroli.toSet();
+   bool _izinNotif = false;
+   bool _izinAlarm = false;
++  Map<String, String> _diagnosa = {};
+ 
+   @override
+   void initState() {
+@@ -47,6 +48,7 @@ class _PengaturanNotifikasiPageState extends State<PengaturanNotifikasiPage> wit
+     final slot = await NotifikasiPatrolService.slotDiingatkan();
+     final izinNotif = await NotifikasiPatrolService.notifikasiDiizinkan();
+     final izinAlarm = await NotifikasiPatrolService.alarmTepatWaktuDiizinkan();
++    final diag = await NotifikasiPatrolService.diagnosa();
+     if (!mounted) return;
+     setState(() {
+       _aktif = aktif;
+@@ -54,6 +56,7 @@ class _PengaturanNotifikasiPageState extends State<PengaturanNotifikasiPage> wit
+       _slot = slot;
+       _izinNotif = izinNotif;
+       _izinAlarm = izinAlarm;
++      _diagnosa = diag;
+       _memuat = false;
+     });
+   }
+@@ -150,6 +153,51 @@ class _PengaturanNotifikasiPageState extends State<PengaturanNotifikasiPage> wit
+               ),
+             ],
+           ),
++          const Divider(height: 32),
++          const Text('Diagnosis alarm terjadwal', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
++          const SizedBox(height: 4),
++          Text('Tombol "Coba bunyikan" memakai jalur langsung. Alarm asli memakai jadwal sistem, jadi uji dengan tombol di bawah.',
++              style: TextStyle(fontSize: 12, color: Colors.grey.shade600)),
++          const SizedBox(height: 8),
++          for (final e in _diagnosa.entries)
++            Padding(
++              padding: const EdgeInsets.symmetric(vertical: 2),
++              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
++                SizedBox(width: 150, child: Text(e.key, style: const TextStyle(fontSize: 12, color: Colors.grey))),
++                Expanded(child: Text(e.value, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
++              ]),
++            ),
++          const SizedBox(height: 8),
++          Wrap(spacing: 8, children: [
++            FilledButton.icon(
++              onPressed: () async {
++                final msg = await NotifikasiPatrolService.ujiJadwalSatuMenit();
++                if (!mounted) return;
++                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
++                  content: Text(msg ?? 'Alarm uji dijadwalkan 1 menit lagi. Kunci layar / tutup aplikasi, lalu tunggu.'),
++                ));
++                _muat();
++              },
++              icon: const Icon(Icons.timer_outlined, size: 18),
++              label: const Text('Tes alarm terjadwal (1 menit)'),
++            ),
++            OutlinedButton.icon(
++              onPressed: () async {
++                await NotifikasiPatrolService.sinkronkanJadwal();
++                await _muat();
++              },
++              icon: const Icon(Icons.refresh, size: 18),
++              label: const Text('Jadwalkan ulang'),
++            ),
++            OutlinedButton.icon(
++              onPressed: () async {
++                await NotifikasiPatrolService.mintaBebasBaterai();
++                await _muat();
++              },
++              icon: const Icon(Icons.battery_saver, size: 18),
++              label: const Text('Bebaskan dari hemat baterai'),
++            ),
++          ]),
+           const SizedBox(height: 16),
+           Text(
+             'Tips: bila alarm tidak berbunyi saat aplikasi tertutup, buka Pengaturan HP > Aplikasi > aplikasi ini > Baterai, '
+diff --git a/lib/services/notifikasi_patrol_service.dart b/lib/services/notifikasi_patrol_service.dart
+index 9a0fbbc..2be758b 100644
+--- a/lib/services/notifikasi_patrol_service.dart
++++ b/lib/services/notifikasi_patrol_service.dart
+@@ -1,6 +1,7 @@
+ import 'dart:async';
+ import 'dart:typed_data';
+ 
++import 'package:permission_handler/permission_handler.dart';
+ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+ import 'package:shared_preferences/shared_preferences.dart';
+ import 'package:timezone/data/latest.dart' as tzdata;
+@@ -259,6 +260,10 @@ class NotifikasiPatrolService {
+   }
+ 
+   // ---------------- Penjadwalan ----------------
++  /// Pesan error penjadwalan terakhir (null = sukses). Ditampilkan di halaman pengaturan.
++  static String? errorTerakhir;
++  static DateTime? sinkronTerakhirUtc;
++
+   static bool _sedangSinkron = false;
+   static bool _adaAntrian = false;
+   // id -> (signature, waktu bunyi ms). Dipakai agar tiap sinkron hanya
+@@ -278,8 +283,11 @@ class NotifikasiPatrolService {
+         _adaAntrian = false;
+         try {
+           await _sinkronInti();
+-        } catch (_) {
+-          // Notifikasi tidak boleh membuat aplikasi crash.
++          errorTerakhir = null;
++        } catch (e) {
++          // Tidak boleh membuat aplikasi crash, tapi JANGAN ditelan diam-diam:
++          // disimpan agar tampil di halaman Alarm & Notifikasi.
++          errorTerakhir = e.toString();
+         }
+       } while (_adaAntrian);
+     } finally {
+@@ -404,6 +412,59 @@ class NotifikasiPatrolService {
+       );
+       _terjadwal[r.id] = (sig, r.ms);
+     }
++    sinkronTerakhirUtc = DateTime.now().toUtc();
++  }
++
++  // ---------------- Diagnosis ----------------
++
++  /// Ringkasan kondisi nyata (dibaca dari sistem Android, bukan dari memori
++  /// aplikasi) untuk mencari tahu kenapa alarm tidak berbunyi.
++  static Future<Map<String, String>> diagnosa() async {
++    await init();
++    final pending = await _plugin.pendingNotificationRequests();
++    final jadwal = pending.where((p) => p.id != _idTes).toList();
++    final terdekat = _terjadwal.values.map((v) => v.$2).where((ms) => ms > DateTime.now().millisecondsSinceEpoch).toList()..sort();
++    final zona = ZonaWaktu.aktif;
++    return {
++      'Notifikasi diizinkan': (await notifikasiDiizinkan()) ? 'Ya' : 'TIDAK',
++      'Alarm tepat waktu diizinkan': (await alarmTepatWaktuDiizinkan()) ? 'Ya' : 'TIDAK (alarm bisa telat/tidak bunyi)',
++      'Bebas pembatasan baterai': (await Permission.ignoreBatteryOptimizations.isGranted) ? 'Ya' : 'Belum (bisa dimatikan sistem)',
++      'Zona waktu aktif': zona.label,
++      'Jadwal terpasang di sistem': '${jadwal.length}',
++      'Jadwal berikutnya': terdekat.isEmpty
++          ? '-'
++          : '${zona.formatLengkap(DateTime.fromMillisecondsSinceEpoch(terdekat.first, isUtc: true))} ${zona.label}',
++      'Error penjadwalan': errorTerakhir ?? 'Tidak ada',
++    };
++  }
++
++  /// Menjadwalkan alarm UJI 1 menit dari sekarang lewat jalur yang SAMA
++  /// dengan alarm asli (zonedSchedule, bukan show). Tutup/kunci aplikasi
++  /// lalu tunggu: kalau ini tidak berbunyi, masalahnya di izin/baterai HP.
++  /// Mengembalikan pesan error, atau null kalau sukses dijadwalkan.
++  static Future<String?> ujiJadwalSatuMenit() async {
++    try {
++      await init();
++      await _buatChannel();
++      final nada = await nadaTerpilih();
++      final bolehExact = await _android?.canScheduleExactNotifications() ?? false;
++      final ms = DateTime.now().toUtc().millisecondsSinceEpoch + 60000;
++      await _plugin.zonedSchedule(
++        _idTes + 1,
++        'Tes jadwal alarm',
++        'Alarm terjadwal berhasil berbunyi tepat waktu.',
++        tz.TZDateTime.fromMillisecondsSinceEpoch(tz.UTC, ms),
++        NotificationDetails(android: _detailAlarm(nada, timeoutMs: 15000)),
++        androidScheduleMode: bolehExact ? AndroidScheduleMode.exactAllowWhileIdle : AndroidScheduleMode.inexactAllowWhileIdle,
++      );
++      return bolehExact ? null : 'Terjadwal, tapi izin "Alarm & pengingat" belum aktif -> bisa telat/tidak bunyi.';
++    } catch (e) {
++      return 'Gagal menjadwalkan: $e';
++    }
++  }
++
++  static Future<void> mintaBebasBaterai() async {
++    await Permission.ignoreBatteryOptimizations.request();
+   }
+ }
+ 
