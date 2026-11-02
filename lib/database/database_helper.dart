@@ -3,6 +3,7 @@ import 'package:path/path.dart';
 
 import '../models/foto_laporan_model.dart';
 import '../models/laporan_model.dart';
+import '../models/zona_waktu.dart';
 
 class DatabaseHelper {
   DatabaseHelper._privateConstructor();
@@ -21,7 +22,7 @@ class DatabaseHelper {
     final path = join(dbPath, 'laporan_patroli.db');
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: (db, version) async {
         await db.execute('''
           CREATE TABLE laporan (
@@ -31,6 +32,9 @@ class DatabaseHelper {
             jam_patroli TEXT NOT NULL,
             pic_patroli TEXT NOT NULL,
             waktu_dibuat TEXT NOT NULL,
+            patroli_utc TEXT,
+            dibuat_utc TEXT,
+            zona TEXT NOT NULL DEFAULT 'WIB',
             loading_data TEXT NOT NULL,
             discharge_data TEXT NOT NULL,
             penyaluran_data TEXT NOT NULL,
@@ -50,6 +54,7 @@ class DatabaseHelper {
             longitude REAL NOT NULL,
             alamat TEXT NOT NULL,
             jam TEXT NOT NULL,
+            diambil_utc TEXT,
             suhu TEXT NOT NULL
           )
         ''');
@@ -66,6 +71,37 @@ class DatabaseHelper {
           // pertama kali setelah update (lihat adopsiLaporanLama).
           await db.execute("ALTER TABLE laporan ADD COLUMN user_id TEXT NOT NULL DEFAULT ''");
           await db.execute("ALTER TABLE laporan ADD COLUMN remote_id TEXT");
+        }
+        if (oldVersion < 4) {
+          // Migrasi ke penyimpanan waktu UTC. Data lama seluruhnya WIB (satu-
+          // satunya zona yang didukung versi lama), jadi dikonversi dengan
+          // offset +7 sekali saja di sini.
+          await db.execute("ALTER TABLE laporan ADD COLUMN patroli_utc TEXT");
+          await db.execute("ALTER TABLE laporan ADD COLUMN dibuat_utc TEXT");
+          await db.execute("ALTER TABLE laporan ADD COLUMN zona TEXT NOT NULL DEFAULT 'WIB'");
+          await db.execute("ALTER TABLE foto_laporan ADD COLUMN diambil_utc TEXT");
+          for (final r in await db.query('laporan')) {
+            final patroli = ZonaWaktu.parseLegacy('${r['tanggal']} ${r['jam_patroli']}');
+            final dibuat = ZonaWaktu.parseLegacy(r['waktu_dibuat'] as String? ?? '');
+            await db.update(
+              'laporan',
+              {
+                'patroli_utc': patroli?.toIso8601String(),
+                'dibuat_utc': dibuat?.toIso8601String(),
+              },
+              where: 'id = ?',
+              whereArgs: [r['id']],
+            );
+          }
+          for (final f in await db.query('foto_laporan')) {
+            final diambil = ZonaWaktu.parseLegacy(f['jam'] as String? ?? '');
+            await db.update(
+              'foto_laporan',
+              {'diambil_utc': diambil?.toIso8601String()},
+              where: 'id = ?',
+              whereArgs: [f['id']],
+            );
+          }
         }
       },
     );
@@ -108,6 +144,19 @@ class DatabaseHelper {
       final id = e['id'] as int;
       return Laporan.fromMap(e, fotos: fotoPerLaporan[id] ?? []);
     }).toList();
+  }
+
+  /// Ringkasan ringan (tanpa foto/JSON kegiatan) semua laporan milik user,
+  /// dipakai penjadwal notifikasi untuk tahu slot patroli mana yang sudah
+  /// dibuat / sudah diupload.
+  Future<List<Map<String, Object?>>> getRingkasanPatroli(String userId) async {
+    final db = await database;
+    return db.query(
+      'laporan',
+      columns: ['tanggal', 'jam_patroli', 'patroli_utc', 'zona', 'upload_status'],
+      where: 'user_id = ?',
+      whereArgs: [userId],
+    );
   }
 
   /// Mengambil satu laporan lengkap dengan 4 fotonya (untuk halaman folder).

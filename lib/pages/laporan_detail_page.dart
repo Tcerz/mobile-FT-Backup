@@ -58,8 +58,8 @@ class _LaporanDetailPageState extends State<LaporanDetailPage> {
         namaPembuat: _laporan?.namaPembuat ?? '',
       );
       final namaDasar = DownloadService.namaFile(
-        _laporan?.tanggal ?? '',
-        _laporan?.jamPatroli ?? '',
+        _laporan?.tanggalTampil ?? '',
+        _laporan?.jamPatroliTampil ?? '',
       );
       final namaFile = '${namaDasar}_${foto.kategori.replaceAll(' ', '')}';
 
@@ -84,7 +84,7 @@ class _LaporanDetailPageState extends State<LaporanDetailPage> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text('Patroli ${laporan.tanggal}'),
+        title: Text('Patroli ${laporan.tanggalTampil}'),
         actions: [
           IconButton(
             tooltip: 'Duplikat jadi Laporan Baru',
@@ -122,10 +122,10 @@ class _LaporanDetailPageState extends State<LaporanDetailPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Jam Patroli: ${laporan.jamPatroli} WIB'),
+                  Text('Jam Patroli: ${laporan.jamPatroliLabel}'),
                   Text('PIC Patroli: ${laporan.picPatroli}'),
                   Text('Dibuat oleh: ${laporan.namaPembuat}'),
-                  Text('Waktu Dibuat: ${laporan.waktuDibuat}'),
+                  Text('Waktu Dibuat: ${laporan.waktuDibuatTampil}'),
                 ],
               ),
             ),
@@ -185,7 +185,7 @@ class _LaporanDetailPageState extends State<LaporanDetailPage> {
                         children: [
                           Text(foto.kategori, style: const TextStyle(fontWeight: FontWeight.bold)),
                           Text('Suhu: ${foto.suhu}', style: const TextStyle(fontSize: 12)),
-                          Text('Jam: ${foto.jam}', style: const TextStyle(fontSize: 12)),
+                          Text('Jam: ${foto.jamTampilDenganZona}', style: const TextStyle(fontSize: 12)),
                           Text(
                             'Koordinat: ${foto.latitude}, ${foto.longitude}',
                             style: const TextStyle(fontSize: 12),

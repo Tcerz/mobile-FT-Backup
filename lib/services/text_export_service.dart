@@ -8,7 +8,7 @@ class TextExportService {
   static String buatTeksLaporan(Laporan laporan) {
     String hari = '';
     try {
-      final tgl = DateFormat('dd-MM-yyyy').parse(laporan.tanggal);
+      final tgl = DateFormat('dd-MM-yyyy').parse(laporan.tanggalTampil);
       hari = DateFormat('EEEE', 'id_ID').format(tgl);
     } catch (_) {
       hari = '';
@@ -17,7 +17,7 @@ class TextExportService {
     final buffer = StringBuffer();
     buffer.writeln('Laporan Safety Patrol Guard');
     buffer.writeln(
-      '${hari.isNotEmpty ? '$hari, ' : ''}${laporan.tanggal} Jam ${laporan.jamPatroli} WIB',
+      '${hari.isNotEmpty ? '$hari, ' : ''}${laporan.tanggalTampil} Jam ${laporan.jamPatroliLabel}',
     );
     buffer.writeln('PT. PERTAMINA PATRA NIAGA FT. SEI SIAK');
     buffer.writeln();
@@ -62,7 +62,7 @@ class TextExportService {
 
     buffer.writeln('PIC Patroli : ${laporan.picPatroli}');
     buffer.writeln('Dibuat oleh : ${laporan.namaPembuat}');
-    buffer.writeln('Waktu Laporan : ${laporan.waktuDibuat}');
+    buffer.writeln('Waktu Laporan : ${laporan.waktuDibuatTampil}');
 
     return buffer.toString();
   }

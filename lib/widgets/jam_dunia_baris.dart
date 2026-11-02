@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:intl/intl.dart';
+import '../models/zona_waktu.dart';
 
 /// Menampilkan jam dunia yang berjalan tiap detik. Dipisah jadi widget
 /// sendiri supaya yang ikut ter-render ulang tiap detik cuma baris kecil
@@ -42,7 +42,8 @@ class _JamDuniaBarisState extends State<JamDuniaBaris> {
 
   @override
   Widget build(BuildContext context) {
-    final waktu = DateTime.now().add(widget.offset ?? Duration.zero);
+    final zona = ZonaWaktu.aktif;
+    final waktu = DateTime.now().toUtc().add(widget.offset ?? Duration.zero);
     return Row(
       children: [
         Icon(
@@ -57,7 +58,7 @@ class _JamDuniaBarisState extends State<JamDuniaBaris> {
               : widget.error != null
                   ? Text(widget.error!, style: const TextStyle(fontSize: 12, color: Colors.orange))
                   : Text(
-                      'Jam dunia: ${DateFormat('dd-MM-yyyy HH:mm:ss').format(waktu)}',
+                      'Jam dunia: ${zona.formatLengkap(waktu)} ${zona.label}',
                       style: const TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
                     ),
         ),

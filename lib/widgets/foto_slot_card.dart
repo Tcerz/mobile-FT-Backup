@@ -79,7 +79,7 @@ class FotoSlotCard extends StatelessWidget {
                     const Text('Mengambil foto & data lokasi...', style: TextStyle(fontSize: 12))
                   else if (sudahAda) ...[
                     Text('Suhu: ${data!.suhu}', style: const TextStyle(fontSize: 12)),
-                    Text('Jam: ${data!.jam}', style: const TextStyle(fontSize: 12)),
+                    Text('Jam: ${data!.jamTampilDenganZona}', style: const TextStyle(fontSize: 12)),
                     Text(
                       'Koordinat: ${data!.latitude}, ${data!.longitude}',
                       style: const TextStyle(fontSize: 12),

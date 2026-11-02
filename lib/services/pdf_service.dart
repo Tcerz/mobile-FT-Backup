@@ -40,11 +40,11 @@ class PdfService {
             style: pw.TextStyle(fontSize: 11, fontStyle: pw.FontStyle.italic),
           ),
           pw.SizedBox(height: 14),
-          _baris('Tanggal', laporan.tanggal),
-          _baris('Jam Patroli', '${laporan.jamPatroli} WIB'),
+          _baris('Tanggal', laporan.tanggalTampil),
+          _baris('Jam Patroli', laporan.jamPatroliLabel),
           _baris('PIC Patroli', laporan.picPatroli),
           _baris('Dibuat Oleh', laporan.namaPembuat),
-          _baris('Waktu Dibuat', laporan.waktuDibuat),
+          _baris('Waktu Dibuat', laporan.waktuDibuatTampil),
           pw.SizedBox(height: 16),
           _judulSeksi('1. Loading'),
           _baris('Personel', laporan.loading.personel),
@@ -107,7 +107,7 @@ class PdfService {
 
     final pdfBytes = await pdf.save();
 
-    final namaFile = DownloadService.namaFile(laporan.tanggal, laporan.jamPatroli);
+    final namaFile = DownloadService.namaFile(laporan.tanggalTampil, laporan.jamPatroliTampil);
     return DownloadService.simpanPdf(namaFile, pdfBytes);
   }
 

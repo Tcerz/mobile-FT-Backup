@@ -15,7 +15,7 @@ class WhatsappShareService {
   static Future<File> siapkanKolase(Laporan laporan) async {
     final bytes = await KolaseService.buatKolase(laporan);
     final dir = await getTemporaryDirectory();
-    final nama = DownloadService.namaFile(laporan.tanggal, laporan.jamPatroli);
+    final nama = DownloadService.namaFile(laporan.tanggalTampil, laporan.jamPatroliTampil);
     final file = File('${dir.path}/${nama}_kolase.png');
     await file.writeAsBytes(bytes, flush: true);
     return file;

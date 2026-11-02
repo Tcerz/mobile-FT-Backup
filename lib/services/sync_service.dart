@@ -6,6 +6,7 @@ import '../database/database_helper.dart';
 import '../models/foto_laporan_model.dart';
 import '../models/kegiatan_model.dart';
 import '../models/laporan_model.dart';
+import '../models/zona_waktu.dart';
 import 'auth_service.dart';
 
 /// Menarik laporan milik user yang sedang login dari server ke device ini.
@@ -38,6 +39,9 @@ class SyncService {
           longitude: (f['longitude'] as num).toDouble(),
           alamat: f['alamat'] as String,
           jam: f['jam'] as String,
+          diambilUtc: f['diambil_utc'] != null
+              ? DateTime.tryParse(f['diambil_utc'] as String)?.toUtc()
+              : ZonaWaktu.parseLegacy(f['jam'] as String),
           suhu: f['suhu'] as String,
         ));
       }
@@ -48,6 +52,14 @@ class SyncService {
         jamPatroli: row['jam_patroli'] as String,
         picPatroli: row['pic_patroli'] as String,
         waktuDibuat: row['waktu_dibuat'] as String,
+        // Data server lama belum punya kolom UTC -> dihitung dari teks (WIB).
+        patroliUtc: row['patroli_utc'] != null
+            ? DateTime.tryParse(row['patroli_utc'] as String)?.toUtc()
+            : ZonaWaktu.parseLegacy('${row['tanggal']} ${row['jam_patroli']}'),
+        dibuatUtc: row['dibuat_utc'] != null
+            ? DateTime.tryParse(row['dibuat_utc'] as String)?.toUtc()
+            : ZonaWaktu.parseLegacy(row['waktu_dibuat'] as String),
+        zona: row['zona'] as String? ?? 'WIB',
         loading: LoadingDischargeData.fromJson(row['loading_data'] as String? ?? ''),
         discharge: LoadingDischargeData.fromJson(row['discharge_data'] as String? ?? ''),
         penyaluran: PenyaluranData.fromJson(row['penyaluran_data'] as String? ?? ''),

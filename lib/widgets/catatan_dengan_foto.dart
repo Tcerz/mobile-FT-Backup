@@ -32,7 +32,7 @@ class _CatatanDenganFotoState extends State<CatatanDenganFoto> {
     if (widget.fotoPaths.length >= maksimalFotoNote) return;
     setState(() => _menambah = true);
     try {
-      final file = await ImageService.ambilFotoDenganKamera();
+      final file = await ImageService.ambilFotoDenganKamera(context);
       if (file != null) {
         final baru = List<String>.from(widget.fotoPaths)..add(file.path);
         widget.onFotoChanged(baru);

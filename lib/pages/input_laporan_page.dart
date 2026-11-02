@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -5,8 +7,10 @@ import 'package:intl/intl.dart';
 import '../models/foto_laporan_model.dart';
 import '../models/kegiatan_model.dart';
 import '../models/laporan_model.dart';
+import '../models/zona_waktu.dart';
 import '../providers/laporan_provider.dart';
 import '../providers/profil_provider.dart';
+import '../providers/zona_waktu_provider.dart';
 import '../services/image_service.dart';
 import '../services/location_service.dart';
 import '../services/permission_service.dart';
@@ -52,6 +56,10 @@ const _judulLangkah = [
 String _gabungPic(String lm, String hsse) =>
     'LM: ${lm.trim()} | HSSE: ${hsse.trim()}';
 
+/// Untuk DRAFT: kalau kedua PIC masih kosong, simpan string kosong (bukan "LM:  | HSSE: ").
+String _gabungPicDraft(String lm, String hsse) =>
+    (lm.trim().isEmpty && hsse.trim().isEmpty) ? '' : _gabungPic(lm, hsse);
+
 final _polaPic = RegExp(r'^LM:\s*(.*?)\s*\|\s*HSSE:\s*(.*)$');
 (String, String) _pisahPic(String gabungan) {
   final match = _polaPic.firstMatch(gabungan);
@@ -59,7 +67,7 @@ final _polaPic = RegExp(r'^LM:\s*(.*?)\s*\|\s*HSSE:\s*(.*)$');
   return (gabungan, ''); // data lama (sebelum fitur ini) -> taruh di LM saja
 }
 
-class _InputLaporanPageState extends State<InputLaporanPage> {
+class _InputLaporanPageState extends State<InputLaporanPage> with WidgetsBindingObserver {
   final PageController _pageController = PageController();
   int _halaman = 0;
 
@@ -86,11 +94,36 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
 
   bool _menyimpan = false;
   bool _loadingAwal = false;
-  String? _waktuDibuatAsli;
+
+  // Waktu dibuat laporan (UTC) -- ditetapkan sekali (saat pertama kali ada
+  // jam dunia) dan TIDAK berubah walau laporan diedit.
+  DateTime? _dibuatUtcAsli;
+  String? _waktuDibuatTeksAsli; // teks legacy (jam dinding zona asal)
+  String _zonaAsal = ZonaWaktu.aktif.label;
+
+  // --- Auto-save (draft) ---
+  // id baris laporan di SQLite. Terisi saat mode edit, atau setelah draft
+  // pertama tersimpan -- selanjutnya semua simpan memakai id ini (UPDATE).
+  int? _idLokal;
+  bool _draftAwal = false; // laporan yang dibuka memang sudah berstatus draft
+  bool _siapAutosave = false; // false selama data awal masih dimuat
+  bool _adaPerubahan = false;
+  bool _sedangSimpanDraft = false;
+  bool _draftUlang = false;
+  bool _sudahFinal = false; // setelah "Simpan & Upload" -> auto-save berhenti
+  Timer? _autosaveTimer;
+  // Diambil sekali di initState supaya auto-save tetap bisa jalan saat
+  // halaman sedang ditutup (context sudah tidak aman dipakai saat itu).
+  late final LaporanProvider _laporanProvider;
+  late final String _namaPembuat;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _laporanProvider = context.read<LaporanProvider>();
+    _namaPembuat = context.read<ProfilProvider>().nama;
+    _idLokal = widget.laporanId;
     _ambilJamDunia();
 
     if (widget.modeEdit) {
@@ -98,8 +131,15 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
     } else if (widget.modeDuplikat) {
       _muatLaporanUntukDuplikat();
     } else {
-      _tanggal = DateTime.now();
+      _tanggal = _hariIniDiZona();
+      _siapAutosave = true;
     }
+  }
+
+  /// Tanggal "hari ini" menurut zona user (bukan zona perangkat).
+  DateTime _hariIniDiZona() {
+    final l = ZonaWaktu.aktif.keLokal(DateTime.now().toUtc());
+    return DateTime(l.year, l.month, l.day);
   }
 
   Future<void> _muatLaporanUntukEdit() async {
@@ -112,12 +152,24 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       return;
     }
     setState(() {
-      _tanggal = DateFormat('dd-MM-yyyy').parse(detail.tanggal);
-      _jamPatroli = detail.jamPatroli;
+      // Jadwal patroli tersimpan sebagai UTC -> ditampilkan di zona user sekarang.
+      final patroli = detail.patroliUtcEfektif;
+      if (patroli != null) {
+        final l = ZonaWaktu.aktif.keLokal(patroli);
+        _tanggal = DateTime(l.year, l.month, l.day);
+        _jamPatroli = ZonaWaktu.aktif.formatJam(patroli);
+      } else {
+        // Draft yang belum memilih jam patroli.
+        _tanggal = _parseTanggalLegacy(detail.tanggal) ?? _hariIniDiZona();
+        _jamPatroli = null;
+      }
       final (lm, hsse) = _pisahPic(detail.picPatroli);
       _picLmController.text = lm;
       _picHsseController.text = hsse;
-      _waktuDibuatAsli = detail.waktuDibuat;
+      _dibuatUtcAsli = detail.dibuatUtcEfektif;
+      _waktuDibuatTeksAsli = detail.waktuDibuat.isEmpty ? null : detail.waktuDibuat;
+      _zonaAsal = detail.zona;
+      _draftAwal = detail.isDraft;
       _loading = detail.loading;
       _discharge = detail.discharge;
       _penyaluran = detail.penyaluran;
@@ -126,7 +178,16 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
         _fotoMap[foto.kategori] = foto;
       }
       _loadingAwal = false;
+      _siapAutosave = true;
     });
+  }
+
+  DateTime? _parseTanggalLegacy(String t) {
+    try {
+      return DateFormat('dd-MM-yyyy').parse(t);
+    } catch (_) {
+      return null;
+    }
   }
 
   Future<void> _muatLaporanUntukDuplikat() async {
@@ -139,7 +200,13 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       return;
     }
     setState(() {
-      _tanggal = DateFormat('dd-MM-yyyy').parse(sumber.tanggal);
+      final patroli = sumber.patroliUtcEfektif;
+      if (patroli != null) {
+        final l = ZonaWaktu.aktif.keLokal(patroli);
+        _tanggal = DateTime(l.year, l.month, l.day);
+      } else {
+        _tanggal = _hariIniDiZona();
+      }
       _jamPatroli = null;
       final (lm, hsse) = _pisahPic(sumber.picPatroli);
       _picLmController.text = lm;
@@ -151,11 +218,27 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       // Foto SENGAJA tidak disalin: petugas wajib mengambil ulang keempat
       // foto (lokasi, jam, suhu harus sesuai patroli yang baru).
       _loadingAwal = false;
+      _siapAutosave = true;
     });
+  }
+
+  /// App ke background / ditutup (termasuk tidak sengaja) -> simpan draft SEKARANG.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      _autosaveTimer?.cancel();
+      _simpanDraft();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _autosaveTimer?.cancel();
+    _simpanDraft(); // halaman ditutup (mis. tombol back) -> flush perubahan terakhir
     _picLmController.dispose();
     _picHsseController.dispose();
     _pageController.dispose();
@@ -168,8 +251,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       _errorJamDunia = null;
     });
     try {
-      final waktuDunia = await TimeService.getCurrentWorldTime();
-      setState(() => _offsetJamDunia = waktuDunia.difference(DateTime.now()));
+      final utcDunia = await TimeService.getCurrentUtc();
+      setState(() => _offsetJamDunia = utcDunia.difference(DateTime.now().toUtc()));
     } catch (e) {
       setState(
         () => _errorJamDunia =
@@ -180,8 +263,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
     }
   }
 
-  DateTime _waktuSaatIni() =>
-      DateTime.now().add(_offsetJamDunia ?? Duration.zero);
+  /// Waktu SEKARANG dalam UTC menurut jam dunia (bukan jam HP).
+  DateTime _sekarangUtc() => DateTime.now().toUtc().add(_offsetJamDunia ?? Duration.zero);
 
   void _tampilkanPesan(String pesan) {
     if (!mounted) return;
@@ -196,10 +279,15 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
     }
     setState(() => _loadingFotoMap[kategori] = true);
     try {
-      final file = await ImageService.ambilFotoDenganKamera();
+      final file = await ImageService.ambilFotoDenganKamera(context);
       if (file == null) return;
 
       final pos = await LocationService.getCurrentLocation();
+      // GPS saat ini paling baru -> sekalian segarkan zona waktu (mis. petugas
+      // sudah pindah dari WIB ke WITA) SEBELUM jam foto diformat.
+      if (mounted) {
+        await context.read<ZonaWaktuProvider>().perbaruiDariKoordinat(pos.latitude, pos.longitude);
+      }
       final alamat = await LocationService.getAddressFromCoordinates(
         pos.latitude,
         pos.longitude,
@@ -208,7 +296,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
         pos.latitude,
         pos.longitude,
       );
-      final jamStr = DateFormat('dd-MM-yyyy HH:mm:ss').format(_waktuSaatIni());
+      final sekarangUtc = _sekarangUtc();
+      final jamStr = ZonaWaktu.aktif.formatLengkap(sekarangUtc);
 
       final foto = FotoLaporan(
         kategori: kategori,
@@ -217,9 +306,11 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
         longitude: pos.longitude,
         alamat: alamat,
         jam: jamStr,
+        diambilUtc: sekarangUtc,
         suhu: suhu,
       );
       setState(() => _fotoMap[kategori] = foto);
+      _tandaiBerubah();
     } catch (e) {
       _tampilkanPesan('Gagal mengambil foto $kategori: $e');
     } finally {
@@ -230,11 +321,14 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
   Future<void> _pilihTanggal() async {
     final result = await showDatePicker(
       context: context,
-      initialDate: _tanggal ?? DateTime.now(),
+      initialDate: _tanggal ?? _hariIniDiZona(),
       firstDate: DateTime.now().subtract(const Duration(days: 30)),
       lastDate: DateTime.now().add(const Duration(days: 30)),
     );
-    if (result != null) setState(() => _tanggal = result);
+    if (result != null) {
+      setState(() => _tanggal = result);
+      _tandaiBerubah();
+    }
   }
 
   void _kePage(int target) {
@@ -247,7 +341,8 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
   }
 
   Future<void> _simpanLaporan() async {
-    final namaPembuat = context.read<ProfilProvider>().nama;
+    final namaPembuat = _namaPembuat;
+    _autosaveTimer?.cancel();
 
     if (namaPembuat.trim().isEmpty) {
       _tampilkanPesan('Gagal memuat data akun, silakan login ulang');
@@ -263,7 +358,7 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       );
       return;
     }
-    if (!widget.modeEdit && _offsetJamDunia == null) {
+    if (_dibuatUtcAsli == null && _offsetJamDunia == null) {
       _kePage(0);
       _tampilkanPesan(
         'Jam dunia belum berhasil diambil. Tekan ikon refresh jam dahulu.',
@@ -301,40 +396,27 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
     }
 
     setState(() => _menyimpan = true);
+    // Tunggu auto-save yang sedang berjalan selesai supaya tidak saling menimpa.
+    while (_sedangSimpanDraft) {
+      await Future.delayed(const Duration(milliseconds: 50));
+    }
+    _sudahFinal = true; // mulai sekarang auto-save dimatikan
 
-    final tanggalStr = DateFormat('dd-MM-yyyy').format(_tanggal!);
-    final waktuDibuat = widget.modeEdit && _waktuDibuatAsli != null
-        ? _waktuDibuatAsli!
-        : DateFormat('dd-MM-yyyy HH:mm:ss').format(_waktuSaatIni());
-
-    final laporan = Laporan(
-      id: widget.laporanId,
-      namaPembuat: namaPembuat,
-      tanggal: tanggalStr,
-      jamPatroli: _jamPatroli!,
-      picPatroli: _gabungPic(_picLmController.text, _picHsseController.text),
-      waktuDibuat: waktuDibuat,
-      loading: _loading,
-      discharge: _discharge,
-      penyaluran: _penyaluran,
-      storage: _storage,
-    );
-
-    final fotos = [
-      for (final k in KategoriFoto.semua)
-        if (_fotoMap[k] != null) _fotoMap[k]!,
-    ];
+    final laporan = _bangunLaporan(draft: false);
+    final fotos = _daftarFoto();
 
     // Simpan lokal dulu (selalu berhasil), baru upload otomatis. Kalau
     // upload gagal (mis. tidak ada sinyal), laporan tetap aman di HP dan
     // di-upload ulang otomatis saat login berikutnya / lewat tombol di card.
-    final provider = context.read<LaporanProvider>();
+    // Kalau sebelumnya sudah ada draft (auto-save), baris yang sama di-UPDATE.
+    final provider = _laporanProvider;
     final int id;
-    if (widget.modeEdit) {
+    if (_idLokal != null) {
       await provider.updateLaporan(laporan, fotos);
-      id = widget.laporanId!;
+      id = _idLokal!;
     } else {
       id = await provider.simpanLaporan(laporan, fotos);
+      _idLokal = id;
     }
     final errorUpload = await provider.uploadLaporanById(id);
 
@@ -354,7 +436,107 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
     );
   }
 
+  List<FotoLaporan> _daftarFoto() => [
+        for (final k in KategoriFoto.semua)
+          if (_fotoMap[k] != null) _fotoMap[k]!,
+      ];
+
+  /// Menyusun objek Laporan dari isi form. [draft] = true -> boleh belum
+  /// lengkap (tanpa jam patroli / PIC / jam dunia) dan statusnya DRAFT.
+  Laporan _bangunLaporan({required bool draft}) {
+    final zona = ZonaWaktu.aktif;
+
+    // Jadwal patroli: tanggal + jam yang dipilih = jam DINDING di zona user
+    // -> diterjemahkan ke instan UTC.
+    DateTime? patroliUtc;
+    String tanggalStr;
+    String jamStr = '';
+    if (_tanggal != null && _jamPatroli != null) {
+      final jm = _jamPatroli!.split(':');
+      patroliUtc = zona.dariLokal(_tanggal!.year, _tanggal!.month, _tanggal!.day, int.parse(jm[0]), int.parse(jm[1]));
+      tanggalStr = zona.formatTanggal(patroliUtc);
+      jamStr = _jamPatroli!;
+    } else {
+      tanggalStr = DateFormat('dd-MM-yyyy').format(_tanggal ?? _hariIniDiZona());
+    }
+
+    // Waktu dibuat: ditetapkan sekali, tidak berubah saat diedit.
+    DateTime? dibuatUtc = _dibuatUtcAsli;
+    String teksDibuat = _waktuDibuatTeksAsli ?? '';
+    String zonaDibuat = _zonaAsal;
+    if (dibuatUtc == null && _offsetJamDunia != null) {
+      dibuatUtc = _sekarangUtc();
+      zonaDibuat = zona.label;
+      teksDibuat = zona.formatLengkap(dibuatUtc);
+      _dibuatUtcAsli = dibuatUtc;
+      _waktuDibuatTeksAsli = teksDibuat;
+      _zonaAsal = zonaDibuat;
+    }
+
+    return Laporan(
+      id: _idLokal,
+      namaPembuat: _namaPembuat,
+      tanggal: tanggalStr,
+      jamPatroli: jamStr,
+      picPatroli: draft
+          ? _gabungPicDraft(_picLmController.text, _picHsseController.text)
+          : _gabungPic(_picLmController.text, _picHsseController.text),
+      waktuDibuat: teksDibuat,
+      patroliUtc: patroliUtc,
+      dibuatUtc: dibuatUtc,
+      zona: zonaDibuat,
+      loading: _loading,
+      discharge: _discharge,
+      penyaluran: _penyaluran,
+      storage: _storage,
+      uploadStatus: draft ? 'DRAFT' : 'LOCAL',
+    );
+  }
+
+  // ---------------- AUTO-SAVE ----------------
+
+  /// Dipanggil setiap user mengubah sesuatu. Simpan draft ditunda ~1,5 detik
+  /// setelah perubahan terakhir (debounce); simpan segera terjadi saat app
+  /// ke background / halaman ditutup.
+  void _tandaiBerubah() {
+    if (!_siapAutosave || _sudahFinal) return;
+    _adaPerubahan = true;
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(const Duration(milliseconds: 1500), _simpanDraft);
+  }
+
+  /// Menyimpan isi form sebagai DRAFT di HP. TIDAK memicu upload -- upload
+  /// baru jalan saat user menekan "Simpan & Upload" (data lengkap). Fungsi
+  /// ini sengaja tidak memakai `context`/`setState` supaya aman dipanggil
+  /// saat halaman sedang ditutup.
+  Future<void> _simpanDraft() async {
+    if (!_siapAutosave || !_adaPerubahan || _menyimpan || _sudahFinal) return;
+    if (_sedangSimpanDraft) {
+      _draftUlang = true;
+      return;
+    }
+    _sedangSimpanDraft = true;
+    try {
+      do {
+        _draftUlang = false;
+        _adaPerubahan = false;
+        final laporan = _bangunLaporan(draft: true);
+        final fotos = _daftarFoto();
+        if (_idLokal == null) {
+          _idLokal = await _laporanProvider.simpanDraftBaru(laporan, fotos);
+        } else {
+          await _laporanProvider.updateDraft(laporan, fotos);
+        }
+      } while (_draftUlang && !_sudahFinal);
+    } catch (_) {
+      _adaPerubahan = true; // gagal -> coba lagi pada perubahan berikutnya
+    } finally {
+      _sedangSimpanDraft = false;
+    }
+  }
+
   String get _judul {
+    if (widget.modeEdit && _draftAwal) return 'Lanjutkan Draft Laporan';
     if (widget.modeEdit) return 'Edit Laporan Patroli';
     if (widget.modeDuplikat) return 'Duplikat Laporan Patroli';
     return 'Buat Laporan Patroli';
@@ -369,7 +551,16 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
       );
     }
 
-    return Scaffold(
+    return PopScope(
+      canPop: true,
+      // Tombol back: simpan draft terakhir (berjalan tanpa context, aman setelah pop).
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) {
+          _autosaveTimer?.cancel();
+          _simpanDraft();
+        }
+      },
+      child: Scaffold(
       appBar: AppBar(title: Text(_judul)),
       body: Column(
         children: [
@@ -385,26 +576,26 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
                   LoadingDischargeForm(
                     judul: '1. Loading',
                     data: _loading,
-                    onChanged: (v) => setState(() => _loading = v),
+                    onChanged: (v) => _ubah(() => _loading = v),
                   ),
                 ),
                 _halamanKegiatan(
                   LoadingDischargeForm(
                     judul: '2. Discharge',
                     data: _discharge,
-                    onChanged: (v) => setState(() => _discharge = v),
+                    onChanged: (v) => _ubah(() => _discharge = v),
                   ),
                 ),
                 _halamanKegiatan(
                   PenyaluranForm(
                     data: _penyaluran,
-                    onChanged: (v) => setState(() => _penyaluran = v),
+                    onChanged: (v) => _ubah(() => _penyaluran = v),
                   ),
                 ),
                 _halamanKegiatan(
                   StorageForm(
                     data: _storage,
-                    onChanged: (v) => setState(() => _storage = v),
+                    onChanged: (v) => _ubah(() => _storage = v),
                   ),
                 ),
               ],
@@ -413,7 +604,14 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
           _tombolNavigasi(),
         ],
       ),
+    ),
     );
+  }
+
+  /// setState + tandai perubahan untuk auto-save.
+  void _ubah(VoidCallback f) {
+    setState(f);
+    _tandaiBerubah();
   }
 
   Widget _indikatorLangkah() {
@@ -484,14 +682,21 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
             labelText: 'Jam Patroli',
             border: OutlineInputBorder(),
           ),
-          items: daftarJamPatroli
-              .map((j) => DropdownMenuItem(value: j, child: Text('$j WIB')))
+          // Jam patroli = jam dinding di zona user (WIB/WITA/WIT, sesuai lokasi).
+          // Laporan lama yang dilihat dari zona berbeda bisa punya jam di luar
+          // daftar tetap (mis. 07:00 WITA) -> tetap ditampilkan agar tidak error.
+          items: [
+            ...daftarJamPatroli,
+            if (_jamPatroli != null && !daftarJamPatroli.contains(_jamPatroli)) _jamPatroli!,
+          ]
+              .map((j) => DropdownMenuItem(value: j, child: Text('$j ${ZonaWaktu.aktif.label}')))
               .toList(),
-          onChanged: (v) => setState(() => _jamPatroli = v),
+          onChanged: (v) => _ubah(() => _jamPatroli = v),
         ),
         const SizedBox(height: 8),
         TextField(
           controller: _picLmController,
+          onChanged: (_) => _tandaiBerubah(),
           decoration: const InputDecoration(
             labelText: 'PIC Patroli - Loading Master (LM)',
             border: OutlineInputBorder(),
@@ -500,6 +705,7 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
         const SizedBox(height: 8),
         TextField(
           controller: _picHsseController,
+          onChanged: (_) => _tandaiBerubah(),
           decoration: const InputDecoration(
             labelText: 'PIC Patroli - HSSE',
             border: OutlineInputBorder(),
@@ -512,10 +718,10 @@ class _InputLaporanPageState extends State<InputLaporanPage> {
           error: _errorJamDunia,
           onRefresh: _ambilJamDunia,
         ),
-        if (widget.modeEdit && _waktuDibuatAsli != null) ...[
+        if (widget.modeEdit && _dibuatUtcAsli != null) ...[
           const SizedBox(height: 4),
           Text(
-            'Waktu dibuat awal: $_waktuDibuatAsli (tidak berubah walau diedit)',
+            'Waktu dibuat awal: ${ZonaWaktu.aktif.formatLengkap(_dibuatUtcAsli!)} ${ZonaWaktu.aktif.label} (tidak berubah walau diedit)',
             style: TextStyle(
               fontSize: 11,
               color: Colors.grey.shade600,

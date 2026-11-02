@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 
 import '../models/foto_laporan_model.dart';
+import '../models/zona_waktu.dart';
 
 const _navy = Color(0xFF142131);
 const _putih = Colors.white;
@@ -81,9 +82,10 @@ class ImageStampService {
       return '${lat.abs().toStringAsFixed(6)}\u00b0$ns, ${lng.abs().toStringAsFixed(6)}\u00b0$ew';
     }
 
-    final bagianJam = foto.jam.split(' '); // format tersimpan: "dd-MM-yyyy HH:mm:ss"
+    // Dikonversi dari UTC ke zona user saat ini; format: "dd-MM-yyyy HH:mm:ss"
+    final bagianJam = foto.jamTampil.split(' ');
     final tanggal = bagianJam.isNotEmpty ? bagianJam[0].replaceAll('-', '/') : '-';
-    final jam = bagianJam.length > 1 ? bagianJam[1].substring(0, 5) : '-'; // HH:mm saja
+    final jam = bagianJam.length > 1 ? '${bagianJam[1].substring(0, 5)} ${ZonaWaktu.aktif.label}' : '-'; // HH:mm + zona
 
     final barisList = <_Baris>[
       _Baris(jam, kotak: true, skalaFont: 0.075, weight: FontWeight.w800, warna: _navy),

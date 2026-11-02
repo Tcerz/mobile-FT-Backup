@@ -1,7 +1,7 @@
 name: laporan_app
 description: "A new Flutter project."
 publish_to: 'none'
-version: 0.2.1
+version: 0.3.2
 
 environment:
   sdk: ^3.11.0
@@ -25,6 +25,12 @@ dependencies:
   # file_saver: ^0.4.0 
   permission_handler: ^11.3.1
   supabase_flutter: ^2.6.0
+  # Notifikasi lokal + alarm terjadwal
+  flutter_local_notifications: ^19.4.0
+  timezone: ^0.10.1
+  # Kamera dalam aplikasi (rasio 4:3 dipaksa) + crop hasil foto
+  camera: ^0.11.2
+  image: ^4.5.4
 
 dev_dependencies:
   flutter_test:

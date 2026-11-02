@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../database/database_helper.dart';
 import '../models/foto_laporan_model.dart';
 import '../models/laporan_model.dart';
 import '../services/auth_service.dart';
+import '../services/notifikasi_patrol_service.dart';
 import '../services/sync_service.dart';
 import '../services/upload_service.dart';
 
@@ -43,6 +46,10 @@ class LaporanProvider extends ChangeNotifier {
       _daftarLaporan = await DatabaseHelper.instance.getAllLaporanHeader(_uid);
     }
     notifyListeners();
+    // Hampir semua perubahan (simpan/edit/hapus/upload/sinkron) berakhir di
+    // sini, jadi ini titik tunggal untuk menyegarkan jadwal notifikasi
+    // (kondisi "belum buat" vs "belum upload" bergantung pada data ini).
+    unawaited(NotifikasiPatrolService.sinkronkanJadwal());
   }
 
   Future<Laporan?> fetchDetail(int id) async {
@@ -53,6 +60,26 @@ class LaporanProvider extends ChangeNotifier {
     final id = await DatabaseHelper.instance.insertLaporan(laporan.copyWith(userId: _uid), fotos);
     await fetchAll();
     return id;
+  }
+
+  /// AUTO-SAVE: menyimpan laporan yang belum selesai sebagai DRAFT. Draft
+  /// hanya tersimpan di HP -- TIDAK pernah ikut terupload (lihat
+  /// [uploadLaporanById] & [uploadTertunda]) sampai user menekan
+  /// "Simpan & Upload". Sengaja tidak memanggil fetchAll() (dipanggil tiap
+  /// beberapa detik saat mengetik); daftar di Home disegarkan saat halaman
+  /// input ditutup / app dibuka lagi.
+  Future<int> simpanDraftBaru(Laporan laporan, List<FotoLaporan> fotos) async {
+    final id = await DatabaseHelper.instance.insertLaporan(
+      laporan.copyWith(userId: _uid, uploadStatus: 'DRAFT'),
+      fotos,
+    );
+    unawaited(NotifikasiPatrolService.sinkronkanJadwal());
+    return id;
+  }
+
+  Future<void> updateDraft(Laporan laporan, List<FotoLaporan> fotos) async {
+    await DatabaseHelper.instance.updateLaporan(laporan.copyWith(uploadStatus: 'DRAFT'), fotos);
+    unawaited(NotifikasiPatrolService.sinkronkanJadwal());
   }
 
   Future<void> hapusLaporan(int id) async {
@@ -73,6 +100,7 @@ class LaporanProvider extends ChangeNotifier {
     try {
       final detail = await fetchDetail(id);
       if (detail == null) return 'Laporan tidak ditemukan';
+      if (detail.isDraft) return 'Laporan masih draft. Lengkapi lalu tekan "Simpan & Upload".';
       await UploadService.uploadLaporan(detail);
       return null;
     } catch (e) {
@@ -88,7 +116,7 @@ class LaporanProvider extends ChangeNotifier {
   /// Return jumlah laporan yang berhasil diupload.
   Future<int> uploadTertunda() async {
     final ids = _daftarLaporan
-        .where((l) => l.id != null && l.uploadStatus != 'UPLOADED')
+        .where((l) => l.id != null && l.uploadStatus != 'UPLOADED' && !l.isDraft)
         .map((l) => l.id!)
         .toList();
     int berhasil = 0;

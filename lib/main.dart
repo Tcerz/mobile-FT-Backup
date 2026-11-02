@@ -8,12 +8,21 @@ import 'pages/akun_nonaktif_page.dart';
 import 'pages/login_page.dart';
 import 'pages/home_page.dart';
 import 'providers/laporan_provider.dart';
+import 'models/zona_waktu.dart';
 import 'providers/profil_provider.dart';
+import 'providers/zona_waktu_provider.dart';
 import 'services/auth_service.dart';
+import 'services/notifikasi_patrol_service.dart';
+import 'services/startup_service.dart';
+import 'services/zona_waktu_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await initializeDateFormatting('id_ID', null);
+  // Zona terakhir yang tersimpan dipakai dulu supaya tampilan waktu benar
+  // sejak frame pertama; lokasi baru dicek setelahnya (ZonaWaktuProvider).
+  ZonaWaktu.aktif = await ZonaWaktuService.muatTersimpan();
+  await NotifikasiPatrolService.init();
   if (SupabaseConfig.sudahDikonfigurasi) {
     await AuthService.init();
   }
@@ -27,6 +36,7 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        ChangeNotifierProvider(create: (_) => ZonaWaktuProvider()..mulai()),
         ChangeNotifierProvider(create: (_) => ProfilProvider()),
         ChangeNotifierProvider(create: (_) => LaporanProvider()),
       ],
@@ -57,8 +67,23 @@ class MyApp extends StatelessWidget {
 /// Menentukan halaman awal berdasarkan status login Supabase:
 /// belum login -> Login, sudah login tapi nonaktif -> AkunNonaktif,
 /// sudah login & aktif -> Home.
-class AppRoot extends StatelessWidget {
+class AppRoot extends StatefulWidget {
   const AppRoot({super.key});
+
+  @override
+  State<AppRoot> createState() => _AppRootState();
+}
+
+class _AppRootState extends State<AppRoot> {
+  @override
+  void initState() {
+    super.initState();
+    // Saat aplikasi pertama kali dibuka: minta izin lokasi (zona waktu) dan
+    // notifikasi/alarm. Setelah itu tidak muncul lagi.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) StartupService.jalankanPertamaKali(context);
+    });
+  }
 
   @override
   Widget build(BuildContext context) {

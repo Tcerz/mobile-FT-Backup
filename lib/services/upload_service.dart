@@ -16,6 +16,7 @@ class UploadService {
   static Future<void> uploadLaporan(Laporan laporan) async {
     final uid = AuthService.currentUser?.id;
     if (uid == null || laporan.id == null) throw Exception('Belum login');
+    if (laporan.isDraft) throw Exception('Draft tidak boleh diupload');
 
     await DatabaseHelper.instance.updateStatusUpload(laporan.id!, 'UPLOADING');
     try {
@@ -27,6 +28,11 @@ class UploadService {
         'jam_patroli': laporan.jamPatroli,
         'pic_patroli': laporan.picPatroli,
         'waktu_dibuat': laporan.waktuDibuat,
+        // Waktu dalam UTC (sumber kebenaran). Kolom teks di atas tetap dikirim
+        // agar dashboard lama tidak rusak.
+        'patroli_utc': laporan.patroliUtcEfektif?.toUtc().toIso8601String(),
+        'dibuat_utc': laporan.dibuatUtcEfektif?.toUtc().toIso8601String(),
+        'zona': laporan.zona,
         'loading_data': laporan.loading.toJson(),
         'discharge_data': laporan.discharge.toJson(),
         'penyaluran_data': laporan.penyaluran.toJson(),
@@ -70,6 +76,7 @@ class UploadService {
           'longitude': foto.longitude,
           'alamat': foto.alamat,
           'jam': foto.jam,
+          'diambil_utc': foto.diambilUtc?.toUtc().toIso8601String(),
           'suhu': foto.suhu,
         });
       }

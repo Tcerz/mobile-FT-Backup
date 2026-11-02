@@ -6,63 +6,50 @@ import 'package:http/http.dart' as http;
 /// diatur di HP. Ini mencegah petugas mengubah-ubah jam/tanggal HP untuk
 /// memanipulasi waktu laporan.
 ///
-/// Sumber UTAMA: header "Date" yang otomatis disertakan di SETIAP respons
-/// server HTTPS mana pun (bagian standar protokol HTTP itu sendiri) --
-/// jauh lebih tahan lama dibanding memakai "API jam" pihak ketiga yang
-/// sering tutup/mati (contoh nyata: worldtimeapi.org yang sebelumnya
-/// dipakai di sini sudah resmi mengumumkan SUNSET/tutup permanen dan
-/// tidak bisa diandalkan lagi).
+/// SEMUA fungsi di sini mengembalikan UTC (DateTime.isUtc == true). Konversi
+/// ke WIB/WITA/WIT dilakukan terpisah lewat [ZonaWaktu] berdasarkan lokasi
+/// user -- jadi tidak ada lagi "jam Jakarta" yang tersembunyi di sini.
+///
+/// Sumber UTAMA: header "Date" yang disertakan di SETIAP respons server
+/// HTTPS (bagian standar protokol HTTP), jauh lebih tahan lama daripada
+/// "API jam" pihak ketiga yang sering tutup (contoh: worldtimeapi.org).
 class TimeService {
-  static Future<DateTime> getCurrentWorldTime({
-    String timezone = 'Asia/Jakarta',
-  }) async {
-    // 1. Sumber utama: header "Date" dari respons server HTTPS besar
-    //    (Google) yang jamnya disinkronkan presisi tinggi lewat NTP.
-    //    Nilai epoch dari header ini dipakai APA ADANYA (tidak digeser
-    //    jam berapa pun) -- karena epoch bersifat absolut/tidak
-    //    tergantung zona waktu, jadi perhitungan selisih dengan jam
-    //    device tetap akurat berapa pun zona waktu device diatur.
+  static Future<DateTime> getCurrentUtc() async {
+    // 1. Header "Date" dari Google (disinkronkan NTP). HttpDate.parse
+    //    sudah menghasilkan UTC.
     try {
       final response = await http
           .head(Uri.parse('https://www.google.com'))
           .timeout(const Duration(seconds: 6));
       final dateHeader = _cariHeaderDate(response.headers);
       if (dateHeader != null) {
-        return HttpDate.parse(dateHeader);
+        return HttpDate.parse(dateHeader).toUtc();
       }
     } catch (_) {
       // lanjut ke fallback
     }
 
-    // 2. Fallback: timeapi.io (kalau header Date entah kenapa tidak ada,
-    //    atau tidak ada akses ke google.com tapi masih ada internet).
+    // 2. Fallback: timeapi.io, diminta langsung dalam zona UTC. Responsnya
+    //    tanpa penanda zona ("2026-10-28T03:04:05.123"), jadi ditambah "Z"
+    //    secara eksplisit supaya TIDAK dianggap jam lokal perangkat.
     try {
       final response = await http
-          .get(
-            Uri.parse(
-              'https://timeapi.io/api/Time/current/zone?timeZone=$timezone',
-            ),
-          )
+          .get(Uri.parse('https://timeapi.io/api/Time/current/zone?timeZone=UTC'))
           .timeout(const Duration(seconds: 6));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final tanggal = data['dateTime'] as String;
-        return DateTime.parse(tanggal);
+        return DateTime.parse(tanggal.endsWith('Z') ? tanggal : '${tanggal}Z');
       }
     } catch (_) {
-      // lanjut ke fallback terakhir
+      // lanjut
     }
 
-    // 3. Kalau benar-benar tidak ada internet, lempar error -- aplikasi
-    //    akan menampilkan peringatan + tombol coba lagi, TIDAK diam-diam
-    //    memakai jam device (supaya waktu laporan tetap terpercaya).
-    throw Exception(
-      'Tidak dapat mengambil jam dunia. Periksa koneksi internet.',
-    );
+    // 3. Tidak ada internet -> error. TIDAK diam-diam memakai jam HP supaya
+    //    waktu laporan tetap terpercaya.
+    throw Exception('Tidak dapat mengambil jam dunia. Periksa koneksi internet.');
   }
 
-  /// Header HTTP bersifat case-insensitive, jadi dicari tanpa peduli
-  /// besar/kecil huruf ("Date", "date", dst semua dianggap sama).
   static String? _cariHeaderDate(Map<String, String> headers) {
     for (final entry in headers.entries) {
       if (entry.key.toLowerCase() == 'date') return entry.value;

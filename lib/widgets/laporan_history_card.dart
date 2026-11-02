@@ -11,6 +11,8 @@ class LaporanHistoryCard extends StatelessWidget {
   final VoidCallback onDelete;
   final VoidCallback onKirimWa;
   final VoidCallback onCobaLagiUpload;
+  /// Khusus laporan berstatus DRAFT: membuka form untuk melanjutkan pengisian.
+  final VoidCallback? onLanjutkanDraft;
 
   const LaporanHistoryCard({
     super.key,
@@ -22,6 +24,7 @@ class LaporanHistoryCard extends StatelessWidget {
     required this.onDelete,
     required this.onKirimWa,
     required this.onCobaLagiUpload,
+    this.onLanjutkanDraft,
   });
 
   /// Upload berjalan otomatis saat simpan, jadi di sini cuma menampilkan
@@ -37,6 +40,12 @@ class LaporanHistoryCard extends StatelessWidget {
         return const Chip(
           avatar: SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2)),
           label: Text('Mengunggah...', style: TextStyle(fontSize: 12)),
+        );
+      case 'DRAFT':
+        return FilledButton.tonalIcon(
+          onPressed: onLanjutkanDraft ?? onTap,
+          icon: const Icon(Icons.edit_note, size: 18),
+          label: const Text('Draft - Lanjutkan'),
         );
       default: // LOCAL / FAILED
         return OutlinedButton.icon(
@@ -60,7 +69,7 @@ class LaporanHistoryCard extends StatelessWidget {
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       child: InkWell(
-        onTap: onTap,
+        onTap: laporan.isDraft && onLanjutkanDraft != null ? onLanjutkanDraft : onTap,
         borderRadius: BorderRadius.circular(8),
         child: Padding(
           padding: const EdgeInsets.all(12),
@@ -80,10 +89,13 @@ class LaporanHistoryCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          'Patroli ${laporan.tanggal} - ${laporan.jamPatroli} WIB',
+                          'Patroli ${laporan.tanggalTampil} - ${laporan.jamPatroliLabel}',
                           style: const TextStyle(fontWeight: FontWeight.bold),
                         ),
-                        Text('PIC: ${laporan.picPatroli}', style: const TextStyle(fontSize: 12)),
+                        Text(
+                          laporan.picPatroli.isEmpty ? 'PIC: (belum diisi)' : 'PIC: ${laporan.picPatroli}',
+                          style: const TextStyle(fontSize: 12),
+                        ),
                         Text(
                           'Dibuat oleh: ${laporan.namaPembuat}',
                           style: const TextStyle(fontSize: 12, color: Colors.grey),

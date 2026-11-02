@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../models/laporan_model.dart';
 import '../providers/laporan_provider.dart';
+import '../providers/zona_waktu_provider.dart';
 import '../services/pdf_service.dart';
 import '../services/text_export_service.dart';
 import '../services/whatsapp_share_service.dart';
@@ -131,7 +132,7 @@ class _HomePageState extends State<HomePage> {
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Hapus Laporan'),
-        content: Text('Hapus laporan ${laporan.tanggal} - ${laporan.jamPatroli}?'),
+        content: Text('Hapus laporan ${laporan.tanggalTampil} - ${laporan.jamPatroliLabel}?'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Batal')),
           TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('Hapus')),
@@ -154,9 +155,19 @@ class _HomePageState extends State<HomePage> {
     if (mounted) context.read<LaporanProvider>().fetchAll();
   }
 
+  /// Melanjutkan laporan DRAFT (hasil auto-save) lewat form edit.
+  Future<void> _lanjutkanDraft(int id) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => InputLaporanPage(laporanId: id)),
+    );
+    if (mounted) context.read<LaporanProvider>().fetchAll();
+  }
+
   @override
   Widget build(BuildContext context) {
     final provider = context.watch<LaporanProvider>();
+    context.watch<ZonaWaktuProvider>(); // rebuild saat zona waktu berubah
 
     return Scaffold(
       appBar: AppBar(
@@ -222,6 +233,7 @@ class _HomePageState extends State<HomePage> {
                         onDelete: () => _hapus(laporan),
                         onKirimWa: () => _kirimWa(laporan.id!),
                         onCobaLagiUpload: () => _cobaLagiUpload(laporan.id!),
+                        onLanjutkanDraft: () => _lanjutkanDraft(laporan.id!),
                       );
                     },
                   ),

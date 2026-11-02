@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Resource suara dipanggil lewat NAMA (string) dari kode Dart, jadi R8/
+     resource shrinker di build release menganggapnya tidak terpakai dan
+     menghapusnya. File ini mencegah itu. -->
+<resources xmlns:tools="http://schemas.android.com/tools"
+    tools:keep="@raw/alarm_*,@raw/notif_*" />
